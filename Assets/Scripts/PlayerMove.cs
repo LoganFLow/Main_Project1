@@ -1,6 +1,7 @@
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.UI;
 
 public class PlayerMove : MonoBehaviour
 {
@@ -8,9 +9,11 @@ public class PlayerMove : MonoBehaviour
     public float walkSpeed = 5f;
     public float runSpeed = 10f;
     public float rotationSpeed = 500f;
-    public float gravity = -9.81f;
-    public float terminalVelocity = -50f; // Maximum falling speed
+    public float gravity = -20f;
+    public float terminalVelocity = -50f;
     public float jumpHeight = 3f;
+    public float groundCheckRadius = 0.4f; // Радиус для проверки приземления
+    public string groundTag = "Ground"; // Тег для объектов земли
 
     [Header("Ground Check")]
     public Transform groundCheck;
@@ -21,10 +24,24 @@ public class PlayerMove : MonoBehaviour
     public Animator animator;
     private const string ANIM_SPRINT = "Sprint";
     private const string ANIM_RUN_FORWARD = "RunForward";
+    private const string ANIM_RUN_BACKWARD = "RunBackward";
     private const string ANIM_JUMP = "Jump";
 
+    [Header("Stamina")]
+    public float maxStamina = 100f;
+    public float staminaDrainRate = 20f; // Уменьшение выносливости в секунду при беге
+    public float staminaRegenRate = 10f; // Восстановление выносливости в секунду, когда не бегаем
+    public float timeToStartRegen = 2f; // Время в секундах, прежде чем начать восстановление выносливости
+    public Slider staminaSlider; // Ссылка на UI Slider (полоску)
+    private float currentStamina;
+    private float lastRunTime; // Время последнего бега
+
+    [Header("Respawn")]
+    public float fallThreshold = -500f;
+    public Vector3 respawnPosition = Vector3.zero;
+
     // New variable: Prevent Rotation
-    public bool preventRotation = false; // Set this to true in the Inspector
+    public bool preventRotation = false;
 
     private CharacterController controller;
     private Vector3 velocity;
@@ -33,30 +50,27 @@ public class PlayerMove : MonoBehaviour
     private void Start()
     {
         controller = GetComponent<CharacterController>();
-
-        // Check if CharacterController exists.
-        if (controller == null)
-        {
-            Debug.LogError("CharacterController not found on this GameObject.");
-            enabled = false;
-        }
-
-        // Check if Animator exists
-        if (animator == null)
-        {
-            Debug.LogError("Animator component not found. Please assign it in the Inspector.");
-            enabled = false;
-        }
+        currentStamina = maxStamina; // Инициализация выносливости
+        UpdateStaminaUI();
+        lastRunTime = -timeToStartRegen; //Чтобы сразу началась регенерация при старте
     }
 
     private void Update()
     {
+        isGrounded = GroundCheckByTag();
+        // Check for falling below the threshold
+        if (transform.position.y < fallThreshold)
+        {
+            
+            return;
+        }
+
         // Ground Check
         isGrounded = Physics.CheckSphere(groundCheck.position, groundDistance, groundMask);
 
         if (isGrounded && velocity.y < 0)
         {
-            velocity.y = -2f; // Small downward force to keep grounded
+            velocity.y = -2f;
         }
 
         // Input
@@ -72,8 +86,8 @@ public class PlayerMove : MonoBehaviour
             moveDirection.Normalize();
         }
 
-        // Running
-        bool isRunning = Input.GetKey(KeyCode.LeftShift);
+        // Running and Stamina Check
+        bool isRunning = Input.GetKey(KeyCode.LeftShift) && currentStamina > 0; // Check Stamina here
         float currentSpeed = isRunning ? runSpeed : walkSpeed;
 
         // Apply movement
@@ -91,48 +105,80 @@ public class PlayerMove : MonoBehaviour
         if (Input.GetButtonDown("Jump") && isGrounded)
         {
             velocity.y = Mathf.Sqrt(jumpHeight * 2f * -gravity);
-            animator.SetBool(ANIM_JUMP, true); // Start the jump animation
+            animator.SetBool(ANIM_JUMP, true);
         }
 
         // Apply Gravity
-        velocity.y += gravity * Time.deltaTime;
-        velocity.y = Mathf.Max(velocity.y, terminalVelocity); // Clamp the falling speed
-
+        if (!isGrounded)  // Применяем гравитацию только в воздухе
+        {
+            velocity.y += gravity * Time.deltaTime;
+        }
+        velocity.y = Mathf.Max(velocity.y, terminalVelocity); // Ограничиваем падение
         controller.Move(velocity * Time.deltaTime);
 
+        // Stamina Regeneration and Drain
+        if (isRunning)
+        {
+            currentStamina -= staminaDrainRate * Time.deltaTime;
+            lastRunTime = Time.time; // Записываем время последнего бега
+            if (currentStamina < 0)
+            {
+                currentStamina = 0;
+                isRunning = false; // Больше не бежим, если выносливость кончилась
+            }
+        }
+
+        // Регенерация, только если прошло достаточно времени после последнего бега
+        if (Time.time - lastRunTime > timeToStartRegen)
+        {
+            currentStamina += staminaRegenRate * Time.deltaTime;
+            if (currentStamina > maxStamina) currentStamina = maxStamina;
+        }
+
+        UpdateStaminaUI(); // Update Stamina UI after changes
+
         // Animation Handling
-        UpdateAnimations(x, z, isRunning, velocity.y, isGrounded);
+        UpdateAnimations(x, z, isRunning, velocity.y, isGrounded, moveDirection.magnitude);
     }
 
-    // Optional: Draw a gizmo to visualize the ground check radius
-    private void OnDrawGizmosSelected()
+    private void UpdateAnimations(float horizontalInput, float verticalInput, bool isRunning, float verticalVelocity, bool isGrounded, float moveMagnitude)
     {
-        if (groundCheck == null) return;
+        animator.SetBool(ANIM_SPRINT, isRunning && moveMagnitude > 0);
+        animator.SetBool(ANIM_RUN_FORWARD, verticalInput > 0);
+        animator.SetBool(ANIM_RUN_BACKWARD, verticalInput < 0);
 
-        Gizmos.color = Color.yellow;
-        Gizmos.DrawWireSphere(groundCheck.position, groundDistance);
-    }
-    public void ResetVelocity()
-    {
-        velocity = Vector3.zero;
-    }
-    private void UpdateAnimations(float horizontalInput, float verticalInput, bool isRunning, float verticalVelocity, bool isGrounded)
-    {
-        //Running animations
-        animator.SetBool(ANIM_SPRINT, isRunning && (verticalInput > 0 || verticalInput < 0)); //Sprint when moving forward or backwards
-
-        //Forward Running
-        animator.SetBool(ANIM_RUN_FORWARD, verticalInput > 0 );
-
-        //Jump Animation
         if (isGrounded)
         {
-            animator.SetBool(ANIM_JUMP, false); // Ensure Jump is false when grounded
+            animator.SetBool(ANIM_JUMP, false);
         }
         else
         {
-            animator.SetBool(ANIM_JUMP, verticalVelocity > 0); // Only set to true when rising
+            animator.SetBool(ANIM_JUMP, verticalVelocity > 0);
         }
+    }
+    private bool GroundCheckByTag()
+    {
+        // Используем Physics.CheckSphere для проверки
+        Collider[] hitColliders = Physics.OverlapSphere(transform.position, groundCheckRadius);
+        foreach (var hitCollider in hitColliders)
+        {
+            if (hitCollider.gameObject.CompareTag(groundTag))
+            {
+                return true; // Нашли объект с нужным тегом
+            }
+        }
+        return false;
+    }
 
+
+
+    private void UpdateStaminaUI()
+    {
+        staminaSlider.value = currentStamina / maxStamina;
+    }
+
+public void ResetVelocity()
+    {
+        velocity = Vector3.zero;
     }
 }

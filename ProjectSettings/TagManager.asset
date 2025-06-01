@@ -6,6 +6,8 @@ TagManager:
   tags:
   - groundMask
   - New tag
+  - Ground
+  - Stone
   layers:
   - Default
   - TransparentFX
